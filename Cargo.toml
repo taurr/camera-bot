@@ -1,0 +1,83 @@
+[package]
+name = "opencv-cam-test"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+authors = ["Johnny T. Vestergaard <jtv@jrtv.dk>"]
+# license = "MIT"  # https://spdx.org/licenses/
+# categories = [] # https://crates.io/category_slugs
+# keywords = [] # free text
+
+# https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.55"
+#thiserror = "~1.0"
+#clap = { version = "~3.1", features = ["derive"] }
+tracing = "0.1.31"
+#tracing-futures = "~0.2"
+tracing-subscriber = { version = "0.3.9" }
+opencv = "0.63.0"
+
+# === Macro helpers ===
+# paste
+# nb
+# syn
+# static_assertions
+
+# === Utilities ===
+# derive_more = "~0.99"
+# strum
+enum_dispatch = "0.3.8"
+# typenum
+# itertools
+# nom
+# owning_ref
+
+# === Datatypes ===
+# ndarray
+# heapless
+# smallvec
+# tinyvec
+# time/chrono
+# cow
+# dashmap
+# uuid
+# lexical
+
+# === Static variable handling ===
+# once_cell
+# lazy_static
+
+# === Serialization ===
+# serde = "~1"
+# postcard
+
+# === Async ===
+# async-trait = "0.1.52"
+# futures
+tokio = { version = "~1.17", features = ["full"] }
+console-subscriber = { version = "~0.1", optional = true }
+# rayon
+
+# === Thread communication ===
+# flume
+# crossbeam = "0.8.1"
+# parking-lot
+
+# === WEB frameworks ===
+# reqwest
+# hyper
+# tonic
+
+[dev-dependencies]
+tokio = { version = "~1.17", features = ["test-util", "macros"] }
+tokio-test = "~0.4"
+# indoc = "~1.0"     # support for indented string litterals
+# loom
+# proptest
+# criterion
+
+[features]
+default = []
+tokio-console = ["console-subscriber", "tokio/tracing"]

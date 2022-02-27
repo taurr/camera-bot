@@ -1,0 +1,44 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug executable 'opencv-cam-test'",
+      "preLaunchTask": "Check",
+      "cargo": {
+        "args": [
+          "build",
+          "--bin=opencv-cam-test",
+          "--package=opencv-cam-test"
+        ]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "warn,opencv_cam_test=debug"
+      },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests in executable 'opencv-cam-test'",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run",
+          "--bin=opencv-cam-test",
+          "--package=opencv-cam-test"
+        ]
+      },
+      "args": [],
+      "env": {
+        "RUST_LOG": "warn,opencv_cam_test=trace"
+      },
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
