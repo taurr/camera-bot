@@ -1,5 +1,7 @@
 use anyhow::Result;
+use clap::StructOpt;
 use opencv::{imgcodecs, prelude::*};
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 use tokio::select;
@@ -8,27 +10,23 @@ use tokio::time::sleep;
 use tracing::{debug, info, trace};
 
 use crate::alpha_image::AlphaImage;
+use crate::args::{TriggerParams, VideoParams};
 use crate::snapshot_repo::SnapshotRepo;
 
 mod alpha_image;
+mod args;
 mod auto_trigger;
 mod capture_thread;
 mod log;
 mod snapshot_repo;
 mod ui_thread;
 
-const CAM_WIDTH: f64 = 960.;
-const CAM_FRAMERATE: f64 = 20.;
-
 const KEY_ESCAPE: i32 = 27;
 const KEY_ENTER: i32 = 13;
 
-const DURATION_UNTIL_COUNTDOWN: Duration = Duration::from_secs(7);
-const DURATION_BETWEEN_COUNTDOWN: Duration = Duration::from_secs(1);
-const DURATION_SNAPSHOT_FREEZE: Duration = Duration::from_secs(3);
-
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = args::Args::parse();
     log::setup_tracing();
     info!("starting");
 
@@ -37,23 +35,40 @@ async fn main() -> Result<()> {
     let (trigger_event_sender, mut trigger_event_receiver) = broadcast::channel(1);
     let (ui_event_sender, mut ui_event_receiver) = broadcast::channel(1);
 
-    let (countdown_blend_images, snapshot_blend_image) = read_overlay_images()?;
+    let (countdown_blend_images, snapshot_blend_image) = read_overlay_images(
+        &args.countdown.unwrap_or_else(|| {
+            ["assets/1.png", "assets/2.png", "assets/3.png"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect()
+        }),
+        &args
+            .mugshot
+            .unwrap_or_else(|| PathBuf::from("assets/mugshot.png")),
+    )?;
 
-    let (ui_thread, display_control_sender) = spawn_ui_thread(
+    let (ui_thread, ui_control_sender) = spawn_ui_thread(
+        if args.fullscreen {
+            ui_thread::WindowMode::Fullscreen
+        } else {
+            ui_thread::WindowMode::Windowed
+        },
         ui_event_sender,
         capture_event_sender.subscribe(),
         exit_receiver,
     );
 
-    let capture_thread = spawn_capture_thread(capture_event_sender, exit_sender.subscribe());
+    let capture_thread =
+        spawn_capture_thread(args.video, capture_event_sender, exit_sender.subscribe());
 
     let (trigger_thread, trigger_control_sender) = spawn_trigger(
+        args.trigger,
         trigger_event_sender,
         exit_sender.subscribe(),
         countdown_blend_images.len(),
     );
 
-    let mut repo = SnapshotRepo::from_path_and_namepattern("captures", "%Y-%m-%d_%H-%M-%S.jpg");
+    let mut repo = SnapshotRepo::from_path_and_namepattern(args.output, args.filename);
     let mut frame = Mat::default();
     loop {
         select! {
@@ -63,8 +78,9 @@ async fn main() -> Result<()> {
                     match msg {
                         ui_thread::EventMsg::KeyPressed(key) => match key {
                             KEY_ENTER => save_snapshot(
+                                    args.freeze,
                                     &trigger_control_sender,
-                                    &display_control_sender,
+                                    &ui_control_sender,
                                     snapshot_blend_image.clone(),
                                     &mut repo,
                                     frame.clone(),
@@ -85,14 +101,15 @@ async fn main() -> Result<()> {
                 if let Ok(msg) = msg {
                     match msg {
                         auto_trigger::EventMsg::Trigger => save_snapshot(
+                                args.freeze,
                                 &trigger_control_sender,
-                                &display_control_sender,
+                                &ui_control_sender,
                                 snapshot_blend_image.clone(),
                                 &mut repo,
                                 frame.clone(),
                             ).await,
                         auto_trigger::EventMsg::Countdown(n) => {
-                            display_control_sender.send(ui_thread::ControlMsg::Blend(countdown_blend_images.get(n-1).cloned())).await.ok();
+                            ui_control_sender.send(ui_thread::ControlMsg::Blend(countdown_blend_images.get(n-1).cloned())).await.ok();
                         },
                     }
                 }
@@ -111,6 +128,7 @@ async fn main() -> Result<()> {
 }
 
 fn spawn_trigger(
+    params: TriggerParams,
     trigger_event_sender: broadcast::Sender<auto_trigger::EventMsg>,
     exit_receiver: broadcast::Receiver<bool>,
     countdown_from: usize,
@@ -121,6 +139,7 @@ fn spawn_trigger(
     debug!("spawning trigger");
     let (trigger_control_sender, control_receiver) = mpsc::channel(1);
     let trigger_thread = tokio::spawn(auto_trigger::auto_trigger(
+        params,
         trigger_event_sender,
         control_receiver,
         exit_receiver,
@@ -130,17 +149,19 @@ fn spawn_trigger(
 }
 
 fn spawn_capture_thread(
+    video_params: VideoParams,
     capture_event_sender: broadcast::Sender<Mat>,
     exit_receiver: broadcast::Receiver<bool>,
 ) -> thread::JoinHandle<()> {
     debug!("spawning capture thread");
     thread::spawn(move || {
-        capture_thread::frame_grabber(capture_event_sender, exit_receiver)
+        capture_thread::frame_grabber(video_params, capture_event_sender, exit_receiver)
             .expect("capture thread failed");
     })
 }
 
 fn spawn_ui_thread(
+    windowmode: ui_thread::WindowMode,
     ui_event_sender: broadcast::Sender<ui_thread::EventMsg>,
     capture_event_receiver: broadcast::Receiver<Mat>,
     exit_receiver: broadcast::Receiver<bool>,
@@ -150,6 +171,7 @@ fn spawn_ui_thread(
         let (display_control_sender, control_receiver) = mpsc::channel(1);
         let ui_thread = thread::spawn(move || {
             ui_thread::ui_event_loop(
+                windowmode,
                 ui_event_sender,
                 control_receiver,
                 capture_event_receiver,
@@ -162,14 +184,22 @@ fn spawn_ui_thread(
     (ui_thread, display_control_sender)
 }
 
-fn read_overlay_images() -> Result<(Vec<AlphaImage>, Option<AlphaImage>)> {
+fn read_overlay_images(
+    countdown_images: &[PathBuf],
+    mugshot_image: &Path,
+) -> Result<(Vec<AlphaImage>, Option<AlphaImage>)> {
     debug!("reading overlay images");
-    let countdown_blend_images = ["assets/1.png", "assets/2.png", "assets/3.png"]
-        .into_iter()
-        .map(|path| AlphaImage::new(imgcodecs::imread(path, imgcodecs::IMREAD_UNCHANGED)?))
+    let countdown_blend_images = countdown_images
+        .iter()
+        .map(|path| {
+            AlphaImage::new(imgcodecs::imread(
+                &path.display().to_string(),
+                imgcodecs::IMREAD_UNCHANGED,
+            )?)
+        })
         .collect::<Result<Vec<AlphaImage>>>()?;
     let snapshot_blend_image = AlphaImage::new(imgcodecs::imread(
-        "assets/snapshot.png",
+        &mugshot_image.display().to_string(),
         imgcodecs::IMREAD_UNCHANGED,
     )?)
     .ok();
@@ -177,6 +207,7 @@ fn read_overlay_images() -> Result<(Vec<AlphaImage>, Option<AlphaImage>)> {
 }
 
 async fn save_snapshot(
+    freeze_duration: Duration,
     trigger_control_sender: &mpsc::Sender<auto_trigger::ControlMsg>,
     display_control_sender: &mpsc::Sender<ui_thread::ControlMsg>,
     snapshot_blend_image: Option<AlphaImage>,
@@ -197,7 +228,7 @@ async fn save_snapshot(
         .await
         .unwrap();
     repo.save_frame(&frame).expect("failed saving snapshot");
-    sleep(DURATION_SNAPSHOT_FREEZE).await;
+    sleep(freeze_duration).await;
     display_control_sender
         .send(ui_thread::ControlMsg::Blend(None))
         .await

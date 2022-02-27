@@ -3,17 +3,20 @@ use opencv::{prelude::*, videoio};
 use tokio::sync::broadcast;
 use tracing::{debug, info, instrument, trace, warn};
 
+use crate::args::VideoParams;
+
 #[instrument(skip_all)]
 pub fn frame_grabber(
+    video_params: VideoParams,
     frame_event_sender: broadcast::Sender<Mat>,
     mut exit_receiver: broadcast::Receiver<bool>,
 ) -> Result<()> {
     info!("capture thread started");
 
     debug!("opening camera");
-    let mut camera = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
-    camera.set(videoio::CAP_PROP_FRAME_WIDTH, crate::CAM_WIDTH)?;
-    camera.set(videoio::CAP_PROP_XI_FRAMERATE, crate::CAM_FRAMERATE)?;
+    let mut camera = videoio::VideoCapture::new(video_params.device, videoio::CAP_ANY)?;
+    camera.set(videoio::CAP_PROP_FRAME_WIDTH, f64::from(video_params.width))?;
+    camera.set(videoio::CAP_PROP_XI_FRAMERATE, f64::from(video_params.frame_rate))?;
     if !videoio::VideoCapture::is_opened(&camera)? {
         anyhow::bail!("Unable to open default camera!");
     }

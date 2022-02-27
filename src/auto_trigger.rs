@@ -6,7 +6,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, info, instrument, warn};
 
-use crate::{DURATION_BETWEEN_COUNTDOWN, DURATION_UNTIL_COUNTDOWN};
+use crate::args::TriggerParams;
 
 #[derive(Debug, Clone)]
 pub enum EventMsg {
@@ -22,6 +22,7 @@ pub enum ControlMsg {
 
 #[instrument(skip_all)]
 pub async fn auto_trigger(
+    params: TriggerParams,
     event_sender: broadcast::Sender<EventMsg>,
     control_receiver: mpsc::Receiver<ControlMsg>,
     exit_receiver: broadcast::Receiver<bool>,
@@ -31,6 +32,7 @@ pub async fn auto_trigger(
 
     let mut state = State::from(Waiting {
         data: CommonData {
+            params,
             event_sender,
             control_receiver,
             exit_receiver,
@@ -67,6 +69,7 @@ enum State {
 
 #[derive(Debug)]
 struct CommonData {
+    params: TriggerParams,
     event_sender: broadcast::Sender<EventMsg>,
     control_receiver: mpsc::Receiver<ControlMsg>,
     exit_receiver: broadcast::Receiver<bool>,
@@ -112,7 +115,7 @@ impl StateBehavior for Waiting {
                         Some(ControlMsg::Run) | None => continue,
                     }
                 },
-                _ = sleep(DURATION_UNTIL_COUNTDOWN) => {
+                _ = sleep(self.data.params.timeout) => {
                     debug!("timeout");
                     break Some(Countdown {
                         count: self.data.countdown,
@@ -146,7 +149,7 @@ impl StateBehavior for Countdown {
                         Some(ControlMsg::Run) | None => continue,
                     }
                 },
-                _ = sleep(DURATION_BETWEEN_COUNTDOWN) => {
+                _ = sleep(self.data.params.timeout_between) => {
                     debug!("timeout");
                     self.count -= 1;
                     break Some(

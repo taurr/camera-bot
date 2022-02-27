@@ -27,8 +27,15 @@ enum VideoState {
     Frozen,
 }
 
+#[derive(Debug)]
+pub enum WindowMode {
+    Windowed,
+    Fullscreen,
+}
+
 #[instrument(skip_all)]
 pub fn ui_event_loop(
+    windowmode: WindowMode,
     event_sender: broadcast::Sender<EventMsg>,
     mut control_receiver: mpsc::Receiver<ControlMsg>,
     mut frame_receiver: broadcast::Receiver<Mat>,
@@ -42,7 +49,9 @@ pub fn ui_event_loop(
     debug!("opening window");
     let window = "video capture";
     highgui::named_window(window, highgui::WINDOW_NORMAL | highgui::WINDOW_GUI_NORMAL)?;
-    //highgui::set_window_property(window, highgui::WND_PROP_FULLSCREEN, 1.)?;
+    if let WindowMode::Fullscreen = windowmode {
+        highgui::set_window_property(window, highgui::WND_PROP_FULLSCREEN, 1.)?;
+    }
 
     let mut frame_i = Mat::default();
     let mut frame_f = Mat::default();
@@ -71,7 +80,7 @@ pub fn ui_event_loop(
             debug!(?msg, "received control msg");
             match msg {
                 ControlMsg::Blend(img) => {
-                    blending_image = img.map(|img| img.resize(frame_i.size().unwrap()))
+                    blending_image = img.map(|img| img.resize(frame_i.size().unwrap()));
                 }
                 ControlMsg::Freeze => video_state = VideoState::Frozen,
                 ControlMsg::Live => video_state = VideoState::Live,
