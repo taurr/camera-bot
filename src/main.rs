@@ -37,67 +37,38 @@ async fn main() -> Result<()> {
     let (trigger_event_sender, mut trigger_event_receiver) = broadcast::channel(1);
     let (ui_event_sender, mut ui_event_receiver) = broadcast::channel(1);
 
-    debug!("reading overlay images");
-    let countdown_blend_images = ["assets/1.png", "assets/2.png", "assets/3.png"]
-        .into_iter()
-        .map(|path| AlphaImage::new(imgcodecs::imread(path, imgcodecs::IMREAD_UNCHANGED)?))
-        .collect::<Result<Vec<AlphaImage>>>()?;
-    let snapshot_blend_image = AlphaImage::new(imgcodecs::imread(
-        "assets/snapshot.png",
-        imgcodecs::IMREAD_UNCHANGED,
-    )?)
-    .ok();
+    let (countdown_blend_images, snapshot_blend_image) = read_overlay_images()?;
 
-    debug!("spawning ui thread");
-    let (ui_thread, display_control_sender) = {
-        let (display_control_sender, control_receiver) = mpsc::channel(1);
-        let frame_receiver = capture_event_sender.subscribe();
-        let ui_thread = thread::spawn(move || {
-            ui_thread::ui_event_loop(
-                ui_event_sender,
-                control_receiver,
-                frame_receiver,
-                exit_receiver,
-            )
-            .expect("ui thread failed");
-        });
-        (ui_thread, display_control_sender)
-    };
+    let (ui_thread, display_control_sender) = spawn_ui_thread(
+        ui_event_sender,
+        capture_event_sender.subscribe(),
+        exit_receiver,
+    );
 
-    debug!("spawning capture thread");
-    let capture_thread = {
-        let exit_receiver = exit_sender.subscribe();
-        thread::spawn(move || {
-            capture_thread::frame_grabber(capture_event_sender, exit_receiver)
-                .expect("capture thread failed");
-        })
-    };
+    let capture_thread = spawn_capture_thread(capture_event_sender, exit_sender.subscribe());
 
-    debug!("spawning trigger");
-    let (trigger_thread, trigger_control_sender) = {
-        let (trigger_control_sender, control_receiver) = mpsc::channel(1);
-        let exit_receiver = exit_sender.subscribe();
-        let trigger_thread = tokio::spawn(auto_trigger::auto_trigger(
-            trigger_event_sender,
-            control_receiver,
-            exit_receiver,
-            countdown_blend_images.len(),
-        ));
-        (trigger_thread, trigger_control_sender)
-    };
+    let (trigger_thread, trigger_control_sender) = spawn_trigger(
+        trigger_event_sender,
+        exit_sender.subscribe(),
+        countdown_blend_images.len(),
+    );
 
-    let mut repo = SnapshotRepo::from_path_and_namepattern("captures", "test_img-$COUNTER$.jpg");
+    let mut repo = SnapshotRepo::from_path_and_namepattern("captures", "%Y-%m-%d_%H-%M-%S.jpg");
     let mut frame = Mat::default();
     loop {
-        let mut take_snapshot = false;
-
         select! {
             msg = ui_event_receiver.recv() => {
                 debug!(?msg, "msg from ui thread");
                 if let Ok(msg) = msg {
                     match msg {
                         ui_thread::EventMsg::KeyPressed(key) => match key {
-                            KEY_ENTER => take_snapshot = true,
+                            KEY_ENTER => save_snapshot(
+                                    &trigger_control_sender,
+                                    &display_control_sender,
+                                    snapshot_blend_image.clone(),
+                                    &mut repo,
+                                    frame.clone(),
+                                ).await,
                             KEY_ESCAPE => break,
                             _ => {}
                         },
@@ -113,7 +84,13 @@ async fn main() -> Result<()> {
                 debug!(?msg, "msg from trigger");
                 if let Ok(msg) = msg {
                     match msg {
-                        auto_trigger::EventMsg::Trigger => take_snapshot = true,
+                        auto_trigger::EventMsg::Trigger => save_snapshot(
+                                &trigger_control_sender,
+                                &display_control_sender,
+                                snapshot_blend_image.clone(),
+                                &mut repo,
+                                frame.clone(),
+                            ).await,
                         auto_trigger::EventMsg::Countdown(n) => {
                             display_control_sender.send(ui_thread::ControlMsg::Blend(countdown_blend_images.get(n-1).cloned())).await.ok();
                         },
@@ -121,35 +98,6 @@ async fn main() -> Result<()> {
                 }
             }
         };
-
-        if take_snapshot {
-            info!("Taking snapshot");
-            trigger_control_sender
-                .send(auto_trigger::ControlMsg::Stop)
-                .await?;
-            display_control_sender
-                .send(ui_thread::ControlMsg::Freeze)
-                .await
-                .ok();
-            display_control_sender
-                .send(ui_thread::ControlMsg::Blend(snapshot_blend_image.clone()))
-                .await
-                .ok();
-            repo.save_frame(&frame)?;
-            sleep(DURATION_SNAPSHOT_FREEZE).await;
-            display_control_sender
-                .send(ui_thread::ControlMsg::Blend(None))
-                .await
-                .ok();
-            display_control_sender
-                .send(ui_thread::ControlMsg::Live)
-                .await
-                .ok();
-            trigger_control_sender
-                .send(auto_trigger::ControlMsg::Run)
-                .await?;
-            debug!("snapshot taken");
-        }
     }
 
     info!("sending exit message");
@@ -160,4 +108,107 @@ async fn main() -> Result<()> {
 
     info!("exited");
     Ok(())
+}
+
+fn spawn_trigger(
+    trigger_event_sender: broadcast::Sender<auto_trigger::EventMsg>,
+    exit_receiver: broadcast::Receiver<bool>,
+    countdown_from: usize,
+) -> (
+    tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    mpsc::Sender<auto_trigger::ControlMsg>,
+) {
+    debug!("spawning trigger");
+    let (trigger_control_sender, control_receiver) = mpsc::channel(1);
+    let trigger_thread = tokio::spawn(auto_trigger::auto_trigger(
+        trigger_event_sender,
+        control_receiver,
+        exit_receiver,
+        countdown_from,
+    ));
+    (trigger_thread, trigger_control_sender)
+}
+
+fn spawn_capture_thread(
+    capture_event_sender: broadcast::Sender<Mat>,
+    exit_receiver: broadcast::Receiver<bool>,
+) -> thread::JoinHandle<()> {
+    debug!("spawning capture thread");
+    thread::spawn(move || {
+        capture_thread::frame_grabber(capture_event_sender, exit_receiver)
+            .expect("capture thread failed");
+    })
+}
+
+fn spawn_ui_thread(
+    ui_event_sender: broadcast::Sender<ui_thread::EventMsg>,
+    capture_event_receiver: broadcast::Receiver<Mat>,
+    exit_receiver: broadcast::Receiver<bool>,
+) -> (thread::JoinHandle<()>, mpsc::Sender<ui_thread::ControlMsg>) {
+    debug!("spawning ui thread");
+    let (ui_thread, display_control_sender) = {
+        let (display_control_sender, control_receiver) = mpsc::channel(1);
+        let ui_thread = thread::spawn(move || {
+            ui_thread::ui_event_loop(
+                ui_event_sender,
+                control_receiver,
+                capture_event_receiver,
+                exit_receiver,
+            )
+            .expect("ui thread failed");
+        });
+        (ui_thread, display_control_sender)
+    };
+    (ui_thread, display_control_sender)
+}
+
+fn read_overlay_images() -> Result<(Vec<AlphaImage>, Option<AlphaImage>)> {
+    debug!("reading overlay images");
+    let countdown_blend_images = ["assets/1.png", "assets/2.png", "assets/3.png"]
+        .into_iter()
+        .map(|path| AlphaImage::new(imgcodecs::imread(path, imgcodecs::IMREAD_UNCHANGED)?))
+        .collect::<Result<Vec<AlphaImage>>>()?;
+    let snapshot_blend_image = AlphaImage::new(imgcodecs::imread(
+        "assets/snapshot.png",
+        imgcodecs::IMREAD_UNCHANGED,
+    )?)
+    .ok();
+    Ok((countdown_blend_images, snapshot_blend_image))
+}
+
+async fn save_snapshot(
+    trigger_control_sender: &mpsc::Sender<auto_trigger::ControlMsg>,
+    display_control_sender: &mpsc::Sender<ui_thread::ControlMsg>,
+    snapshot_blend_image: Option<AlphaImage>,
+    repo: &mut SnapshotRepo,
+    frame: Mat,
+) {
+    info!("Taking snapshot");
+    trigger_control_sender
+        .send(auto_trigger::ControlMsg::Stop)
+        .await
+        .unwrap();
+    display_control_sender
+        .send(ui_thread::ControlMsg::Freeze)
+        .await
+        .unwrap();
+    display_control_sender
+        .send(ui_thread::ControlMsg::Blend(snapshot_blend_image))
+        .await
+        .unwrap();
+    repo.save_frame(&frame).expect("failed saving snapshot");
+    sleep(DURATION_SNAPSHOT_FREEZE).await;
+    display_control_sender
+        .send(ui_thread::ControlMsg::Blend(None))
+        .await
+        .unwrap();
+    display_control_sender
+        .send(ui_thread::ControlMsg::Live)
+        .await
+        .unwrap();
+    trigger_control_sender
+        .send(auto_trigger::ControlMsg::Run)
+        .await
+        .unwrap();
+    debug!("snapshot taken");
 }

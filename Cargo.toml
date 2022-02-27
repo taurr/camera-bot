@@ -39,7 +39,8 @@ enum_dispatch = "0.3.8"
 # heapless
 # smallvec
 # tinyvec
-# time/chrono
+# time = { version = "0.3.7", features = ["local-offset", "formatting", "macros" ] }
+chrono = "0.4.19"
 # cow
 # dashmap
 # uuid
@@ -54,7 +55,7 @@ enum_dispatch = "0.3.8"
 # postcard
 
 # === Async ===
-# async-trait = "0.1.52"
+async-trait = "0.1.52"
 # futures
 tokio = { version = "~1.17", features = ["full"] }
 console-subscriber = { version = "~0.1", optional = true }

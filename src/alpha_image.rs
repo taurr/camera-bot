@@ -27,6 +27,7 @@ impl AlphaImage {
         &self.image_f
     }
 }
+
 #[test]
 fn alpha_image_is_send() {
     fn assert<T: Send>() {}

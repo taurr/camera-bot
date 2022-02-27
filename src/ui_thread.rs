@@ -44,7 +44,6 @@ pub fn ui_event_loop(
     highgui::named_window(window, highgui::WINDOW_NORMAL | highgui::WINDOW_GUI_NORMAL)?;
     //highgui::set_window_property(window, highgui::WND_PROP_FULLSCREEN, 1.)?;
 
-    debug!("entering ui event loop");
     let mut frame_i = Mat::default();
     let mut frame_f = Mat::default();
     let mut tmp_1_f = Mat::default();
@@ -53,7 +52,7 @@ pub fn ui_event_loop(
         let key = highgui::wait_key(20)?;
 
         if exit_receiver.try_recv().is_ok() {
-            info!("exit received");
+            debug!("exit received");
             break;
         }
 
@@ -69,7 +68,7 @@ pub fn ui_event_loop(
         }
 
         if let Ok(msg) = control_receiver.try_recv() {
-            debug!(?msg, "received display msg");
+            debug!(?msg, "received control msg");
             match msg {
                 ControlMsg::Blend(img) => blending_image = img,
                 ControlMsg::Freeze => video_state = VideoState::Frozen,
@@ -100,7 +99,6 @@ pub fn ui_event_loop(
                 &Mat::default(),
                 -1,
             )?;
-
             tmp_2_f.assign_to(&mut frame_i, CV_8U)?;
         } else {
             frame_f.assign_to(&mut frame_i, CV_8U)?;

@@ -1,7 +1,6 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use enum_dispatch::enum_dispatch;
-use std::future::Future;
-use std::pin::Pin;
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
@@ -30,13 +29,14 @@ pub async fn auto_trigger(
 ) -> Result<()> {
     info!("auto_trigger started");
 
-    let mut state: State = Waiting(CommonData {
-        event_sender,
-        control_receiver,
-        exit_receiver,
-        countdown,
-    })
-    .into();
+    let mut state = State::from(Waiting {
+        data: CommonData {
+            event_sender,
+            control_receiver,
+            exit_receiver,
+            countdown,
+        },
+    });
 
     let status = loop {
         match state.next_state().await {
@@ -50,9 +50,10 @@ pub async fn auto_trigger(
     status
 }
 
+#[async_trait]
 #[enum_dispatch(State)]
 trait StateBehavior {
-    fn next_state(self) -> TraitFuture<Result<Option<State>>>;
+    async fn next_state(self) -> Result<Option<State>>;
 }
 
 #[enum_dispatch]
@@ -64,8 +65,6 @@ enum State {
     Stopped,
 }
 
-type TraitFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-
 #[derive(Debug)]
 struct CommonData {
     event_sender: broadcast::Sender<EventMsg>,
@@ -75,7 +74,9 @@ struct CommonData {
 }
 
 #[derive(Debug)]
-struct Waiting(CommonData);
+struct Waiting {
+    data: CommonData,
+}
 
 #[derive(Debug)]
 struct Countdown {
@@ -84,99 +85,114 @@ struct Countdown {
 }
 
 #[derive(Debug)]
-struct Trigger(CommonData);
+struct Trigger {
+    data: CommonData,
+}
 
 #[derive(Debug)]
-struct Stopped(CommonData);
+struct Stopped {
+    data: CommonData,
+}
 
+#[async_trait]
 impl StateBehavior for Waiting {
     #[instrument(skip(self))]
-    fn next_state(mut self) -> TraitFuture<Result<Option<State>>> {
-        Box::pin(async move {
-            debug!("=> Waiting");
-            let next_state = loop {
-                select! {
-                    _ = self.0.exit_receiver.recv() => break None,
-                    msg = self.0.control_receiver.recv() => {
-                        match msg {
-                            Some(ControlMsg::Stop) => break Some(Stopped(self.0).into()),
-                            Some(ControlMsg::Run) => continue,
-                            None => continue,
-                        }
-                    },
-                    _ = sleep(DURATION_UNTIL_COUNTDOWN) => break Some(Countdown {
-                        count: self.0.countdown,
-                        data: self.0,
-                    }.into()),
-                };
+    async fn next_state(mut self) -> Result<Option<State>> {
+        debug!("=> Waiting");
+        let next_state = loop {
+            select! {
+                _ = self.data.exit_receiver.recv() => {
+                    debug!("exit received");
+                    break None
+                },
+                msg = self.data.control_receiver.recv() => {
+                    debug!(?msg, "received control msg");
+                    match msg {
+                        Some(ControlMsg::Stop) => break Some(Stopped { data: self.data }.into()),
+                        Some(ControlMsg::Run) | None => continue,
+                    }
+                },
+                _ = sleep(DURATION_UNTIL_COUNTDOWN) => {
+                    debug!("timeout");
+                    break Some(Countdown {
+                        count: self.data.countdown,
+                        data: self.data,
+                    }.into())
+                },
             };
-            Ok(next_state)
-        })
+        };
+        Ok(next_state)
     }
 }
 
+#[async_trait]
 impl StateBehavior for Countdown {
     #[instrument(skip(self))]
-    fn next_state(mut self) -> TraitFuture<Result<Option<State>>> {
-        Box::pin(async move {
-            debug!(index=?self.count, "=> Countdown");
-            self.data
-                .event_sender
-                .send(EventMsg::Countdown(self.count))?;
-            let next_state = loop {
-                select! {
-                    _ = self.data.exit_receiver.recv() => break None,
-                    msg = self.data.control_receiver.recv() => {
-                        match msg {
-                            Some(ControlMsg::Stop) => break Some(Stopped(self.data).into()),
-                            Some(ControlMsg::Run) => continue,
-                            None => continue,
-                        }
-                    },
-                    _ = sleep(DURATION_BETWEEN_COUNTDOWN) => {
-                        self.count -= 1;
-                        if self.count > 0 {
-                            break Some(self.into())
-                        } else {
-                            break Some(Trigger(self.data).into())
-                        }
+    async fn next_state(mut self) -> Result<Option<State>> {
+        debug!(index=?self.count, "=> Countdown");
+        self.data
+            .event_sender
+            .send(EventMsg::Countdown(self.count))?;
+        let next_state = loop {
+            select! {
+                _ = self.data.exit_receiver.recv() => {
+                    debug!("exit received");
+                    break None
+                },
+                msg = self.data.control_receiver.recv() => {
+                    debug!(?msg, "received control msg");
+                    match msg {
+                        Some(ControlMsg::Stop) => break Some(Stopped{ data:self.data }.into()),
+                        Some(ControlMsg::Run) | None => continue,
                     }
+                },
+                _ = sleep(DURATION_BETWEEN_COUNTDOWN) => {
+                    debug!("timeout");
+                    self.count -= 1;
+                    break Some(
+                        if self.count > 0 {
+                            self.into()
+                        } else {
+                            Trigger{data:self.data}.into()
+                        }
+                    )
                 }
-            };
-            Ok(next_state)
-        })
+            }
+        };
+        Ok(next_state)
     }
 }
 
+#[async_trait]
 impl StateBehavior for Trigger {
     #[instrument(skip(self))]
-    fn next_state(self) -> TraitFuture<Result<Option<State>>> {
-        Box::pin(async move {
-            debug!("=> Triggering!!!");
-            self.0.event_sender.send(EventMsg::Trigger)?;
-            Ok(Some(Waiting(self.0).into()))
-        })
+    async fn next_state(self) -> Result<Option<State>> {
+        debug!("=> Triggering!!!");
+        self.data.event_sender.send(EventMsg::Trigger)?;
+        Ok(Some(Waiting { data: self.data }.into()))
     }
 }
 
+#[async_trait]
 impl StateBehavior for Stopped {
     #[instrument(skip(self))]
-    fn next_state(mut self) -> TraitFuture<Result<Option<State>>> {
-        Box::pin(async move {
-            debug!("=> Stopped");
-            let next_state = loop {
-                select! {
-                    _ = self.0.exit_receiver.recv() => break None,
-                    msg = self.0.control_receiver.recv() => {
-                        match msg {
-                            Some(ControlMsg::Stop) => continue,
-                            Some(ControlMsg::Run) => break Some(Waiting(self.0).into()),
-                            None => continue,
-                        }
-                    },
-                }
-            };
-            Ok(next_state)
-        })
+    async fn next_state(mut self) -> Result<Option<State>> {
+        debug!("=> Stopped");
+        let next_state = loop {
+            select! {
+                _ = self.data.exit_receiver.recv() => {
+                    debug!("exit received");
+                    break None
+                },
+                msg = self.data.control_receiver.recv() => {
+                    debug!(?msg, "received control msg");
+                    match msg {
+                        Some(ControlMsg::Run) => break Some(Waiting{ data:self.data }.into()),
+                        Some(ControlMsg::Stop) | None => continue,
+                    }
+                },
+            }
+        };
+        Ok(next_state)
     }
 }
