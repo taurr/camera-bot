@@ -17,7 +17,7 @@ mod log;
 mod snapshot_repo;
 mod ui_thread;
 
-const CAM_WIDTH: f64 = 640.;
+const CAM_WIDTH: f64 = 960.;
 const CAM_FRAMERATE: f64 = 20.;
 
 const KEY_ESCAPE: i32 = 27;
