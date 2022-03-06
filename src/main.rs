@@ -2,7 +2,6 @@ use anyhow::Result;
 use clap::StructOpt;
 use opencv::{imgcodecs, prelude::*};
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::Duration;
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -10,8 +9,10 @@ use tokio::time::sleep;
 use tracing::{debug, info, trace};
 
 use crate::alpha_image::AlphaImage;
-use crate::args::{TriggerParams, VideoParams};
+use crate::auto_trigger::spawn_trigger;
+use crate::capture_thread::spawn_capture_thread;
 use crate::snapshot_repo::SnapshotRepo;
+use crate::ui_thread::spawn_ui_thread;
 
 mod alpha_image;
 mod args;
@@ -125,63 +126,6 @@ async fn main() -> Result<()> {
 
     info!("exited");
     Ok(())
-}
-
-fn spawn_trigger(
-    params: TriggerParams,
-    trigger_event_sender: broadcast::Sender<auto_trigger::EventMsg>,
-    exit_receiver: broadcast::Receiver<bool>,
-    countdown_from: usize,
-) -> (
-    tokio::task::JoinHandle<Result<(), anyhow::Error>>,
-    mpsc::Sender<auto_trigger::ControlMsg>,
-) {
-    debug!("spawning trigger");
-    let (trigger_control_sender, control_receiver) = mpsc::channel(1);
-    let trigger_thread = tokio::spawn(auto_trigger::auto_trigger(
-        params,
-        trigger_event_sender,
-        control_receiver,
-        exit_receiver,
-        countdown_from,
-    ));
-    (trigger_thread, trigger_control_sender)
-}
-
-fn spawn_capture_thread(
-    video_params: VideoParams,
-    capture_event_sender: broadcast::Sender<Mat>,
-    exit_receiver: broadcast::Receiver<bool>,
-) -> thread::JoinHandle<()> {
-    debug!("spawning capture thread");
-    thread::spawn(move || {
-        capture_thread::frame_grabber(video_params, capture_event_sender, exit_receiver)
-            .expect("capture thread failed");
-    })
-}
-
-fn spawn_ui_thread(
-    windowmode: ui_thread::WindowMode,
-    ui_event_sender: broadcast::Sender<ui_thread::EventMsg>,
-    capture_event_receiver: broadcast::Receiver<Mat>,
-    exit_receiver: broadcast::Receiver<bool>,
-) -> (thread::JoinHandle<()>, mpsc::Sender<ui_thread::ControlMsg>) {
-    debug!("spawning ui thread");
-    let (ui_thread, display_control_sender) = {
-        let (display_control_sender, control_receiver) = mpsc::channel(1);
-        let ui_thread = thread::spawn(move || {
-            ui_thread::ui_event_loop(
-                windowmode,
-                ui_event_sender,
-                control_receiver,
-                capture_event_receiver,
-                exit_receiver,
-            )
-            .expect("ui thread failed");
-        });
-        (ui_thread, display_control_sender)
-    };
-    (ui_thread, display_control_sender)
 }
 
 fn read_overlay_images(

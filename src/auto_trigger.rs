@@ -20,8 +20,29 @@ pub enum ControlMsg {
     Stop,
 }
 
+pub fn spawn_trigger(
+    params: TriggerParams,
+    trigger_event_sender: broadcast::Sender<EventMsg>,
+    exit_receiver: broadcast::Receiver<bool>,
+    countdown_from: usize,
+) -> (
+    tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    mpsc::Sender<ControlMsg>,
+) {
+    debug!("spawning trigger");
+    let (trigger_control_sender, control_receiver) = mpsc::channel(1);
+    let trigger_thread = tokio::spawn(auto_trigger(
+        params,
+        trigger_event_sender,
+        control_receiver,
+        exit_receiver,
+        countdown_from,
+    ));
+    (trigger_thread, trigger_control_sender)
+}
+
 #[instrument(skip_all)]
-pub async fn auto_trigger(
+async fn auto_trigger(
     params: TriggerParams,
     event_sender: broadcast::Sender<EventMsg>,
     control_receiver: mpsc::Receiver<ControlMsg>,

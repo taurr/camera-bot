@@ -1,3 +1,5 @@
+use std::thread;
+
 use anyhow::Result;
 use opencv::{
     core::{CV_32F, CV_8U},
@@ -33,8 +35,32 @@ pub enum WindowMode {
     Fullscreen,
 }
 
+pub fn spawn_ui_thread(
+    windowmode: WindowMode,
+    ui_event_sender: broadcast::Sender<EventMsg>,
+    capture_event_receiver: broadcast::Receiver<Mat>,
+    exit_receiver: broadcast::Receiver<bool>,
+) -> (thread::JoinHandle<()>, mpsc::Sender<ControlMsg>) {
+    debug!("spawning ui thread");
+    let (ui_thread, display_control_sender) = {
+        let (display_control_sender, control_receiver) = mpsc::channel(1);
+        let ui_thread = thread::spawn(move || {
+            ui_event_loop(
+                windowmode,
+                ui_event_sender,
+                control_receiver,
+                capture_event_receiver,
+                exit_receiver,
+            )
+            .expect("ui thread failed");
+        });
+        (ui_thread, display_control_sender)
+    };
+    (ui_thread, display_control_sender)
+}
+
 #[instrument(skip_all)]
-pub fn ui_event_loop(
+fn ui_event_loop(
     windowmode: WindowMode,
     event_sender: broadcast::Sender<EventMsg>,
     mut control_receiver: mpsc::Receiver<ControlMsg>,

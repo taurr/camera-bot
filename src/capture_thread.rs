@@ -1,3 +1,5 @@
+use std::thread;
+
 use anyhow::Result;
 use opencv::{prelude::*, videoio};
 use tokio::sync::broadcast;
@@ -5,8 +7,20 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use crate::args::VideoParams;
 
+pub fn spawn_capture_thread(
+    video_params: VideoParams,
+    capture_event_sender: broadcast::Sender<Mat>,
+    exit_receiver: broadcast::Receiver<bool>,
+) -> thread::JoinHandle<()> {
+    debug!("spawning capture thread");
+    thread::spawn(move || {
+        frame_grabber(video_params, capture_event_sender, exit_receiver)
+            .expect("capture thread failed");
+    })
+}
+
 #[instrument(skip_all)]
-pub fn frame_grabber(
+fn frame_grabber(
     video_params: VideoParams,
     frame_event_sender: broadcast::Sender<Mat>,
     mut exit_receiver: broadcast::Receiver<bool>,

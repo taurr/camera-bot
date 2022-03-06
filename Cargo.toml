@@ -80,3 +80,9 @@ tokio-test = "~0.4"
 [features]
 default = []
 tokio-console = ["console-subscriber", "tokio/tracing"]
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+
