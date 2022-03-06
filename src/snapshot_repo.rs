@@ -19,10 +19,10 @@ impl SnapshotRepo {
     /// `name` should contain the pattern `$COUNTER$` in order to supstitute the framecounter
     /// when save snapshorts. Also, `name` may contain standard time formatting strings (see `chrono`).
     #[instrument(skip_all)]
-    pub fn from_path_and_namepattern(path: impl Into<PathBuf>, name: impl Into<String>) -> Self {
+    pub fn from_path_and_namepattern(path: PathBuf, name: &str) -> Self {
         Self {
             counter: 0,
-            path: path.into(),
+            path,
             name: name.into(),
         }
     }

@@ -7,7 +7,7 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use crate::args::VideoParams;
 
-pub fn spawn_capture_thread(
+pub fn spawn(
     video_params: VideoParams,
     capture_event_sender: broadcast::Sender<Mat>,
     exit_receiver: broadcast::Receiver<bool>,
@@ -30,7 +30,10 @@ fn frame_grabber(
     debug!("opening camera");
     let mut camera = videoio::VideoCapture::new(video_params.device, videoio::CAP_ANY)?;
     camera.set(videoio::CAP_PROP_FRAME_WIDTH, f64::from(video_params.width))?;
-    camera.set(videoio::CAP_PROP_XI_FRAMERATE, f64::from(video_params.frame_rate))?;
+    camera.set(
+        videoio::CAP_PROP_XI_FRAMERATE,
+        f64::from(video_params.frame_rate),
+    )?;
     if !videoio::VideoCapture::is_opened(&camera)? {
         anyhow::bail!("Unable to open default camera!");
     }

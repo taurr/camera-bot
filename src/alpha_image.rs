@@ -23,12 +23,28 @@ impl AlphaImage {
         if opencv::core::Size::new(self.image_f.cols(), self.image_f.rows()) != size {
             let mut dst_image_f = Mat::default();
             let mut dst_beta_f = Mat::default();
-            opencv::imgproc::resize(&self.image_f, &mut dst_image_f, size, 0., 0., opencv::imgproc::INTER_CUBIC).unwrap();
-            opencv::imgproc::resize(&self.beta_f, &mut dst_beta_f, size, 0., 0., opencv::imgproc::INTER_CUBIC).unwrap();
+            opencv::imgproc::resize(
+                &self.image_f,
+                &mut dst_image_f,
+                size,
+                0.,
+                0.,
+                opencv::imgproc::INTER_CUBIC,
+            )
+            .unwrap();
+            opencv::imgproc::resize(
+                &self.beta_f,
+                &mut dst_beta_f,
+                size,
+                0.,
+                0.,
+                opencv::imgproc::INTER_CUBIC,
+            )
+            .unwrap();
             return Self {
                 image_f: dst_image_f,
                 beta_f: dst_beta_f,
-            }
+            };
         }
         self
     }

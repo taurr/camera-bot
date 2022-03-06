@@ -35,7 +35,7 @@ pub enum WindowMode {
     Fullscreen,
 }
 
-pub fn spawn_ui_thread(
+pub fn spawn(
     windowmode: WindowMode,
     ui_event_sender: broadcast::Sender<EventMsg>,
     capture_event_receiver: broadcast::Receiver<Mat>,

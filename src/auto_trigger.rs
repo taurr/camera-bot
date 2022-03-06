@@ -20,13 +20,13 @@ pub enum ControlMsg {
     Stop,
 }
 
-pub fn spawn_trigger(
+pub fn spawn(
     params: TriggerParams,
     trigger_event_sender: broadcast::Sender<EventMsg>,
     exit_receiver: broadcast::Receiver<bool>,
     countdown_from: usize,
 ) -> (
-    tokio::task::JoinHandle<Result<(), anyhow::Error>>,
+    tokio::task::JoinHandle<Result<()>>,
     mpsc::Sender<ControlMsg>,
 ) {
     debug!("spawning trigger");
@@ -41,6 +41,21 @@ pub fn spawn_trigger(
     (trigger_thread, trigger_control_sender)
 }
 
+#[enum_dispatch]
+#[derive(Debug)]
+enum State {
+    Waiting,
+    Countdown,
+    Trigger,
+    Stopped,
+}
+
+#[async_trait]
+#[enum_dispatch(State)]
+trait StateBehavior {
+    async fn next_state(self) -> Result<Option<State>>;
+}
+
 #[instrument(skip_all)]
 async fn auto_trigger(
     params: TriggerParams,
@@ -49,6 +64,10 @@ async fn auto_trigger(
     exit_receiver: broadcast::Receiver<bool>,
     countdown: usize,
 ) -> Result<()> {
+    if params.timeout.is_none() {
+        return Ok(());
+    }
+
     info!("auto_trigger started");
 
     let mut state = State::from(Waiting {
@@ -73,21 +92,6 @@ async fn auto_trigger(
     status
 }
 
-#[async_trait]
-#[enum_dispatch(State)]
-trait StateBehavior {
-    async fn next_state(self) -> Result<Option<State>>;
-}
-
-#[enum_dispatch]
-#[derive(Debug)]
-enum State {
-    Waiting,
-    Countdown,
-    Trigger,
-    Stopped,
-}
-
 #[derive(Debug)]
 struct CommonData {
     params: TriggerParams,
@@ -99,22 +103,6 @@ struct CommonData {
 
 #[derive(Debug)]
 struct Waiting {
-    data: CommonData,
-}
-
-#[derive(Debug)]
-struct Countdown {
-    data: CommonData,
-    count: usize,
-}
-
-#[derive(Debug)]
-struct Trigger {
-    data: CommonData,
-}
-
-#[derive(Debug)]
-struct Stopped {
     data: CommonData,
 }
 
@@ -136,7 +124,7 @@ impl StateBehavior for Waiting {
                         Some(ControlMsg::Run) | None => continue,
                     }
                 },
-                _ = sleep(self.data.params.timeout) => {
+                _ = sleep(self.data.params.timeout.unwrap()) => {
                     debug!("timeout");
                     break Some(Countdown {
                         count: self.data.countdown,
@@ -147,6 +135,12 @@ impl StateBehavior for Waiting {
         };
         Ok(next_state)
     }
+}
+
+#[derive(Debug)]
+struct Countdown {
+    data: CommonData,
+    count: usize,
 }
 
 #[async_trait]
@@ -187,6 +181,11 @@ impl StateBehavior for Countdown {
     }
 }
 
+#[derive(Debug)]
+struct Trigger {
+    data: CommonData,
+}
+
 #[async_trait]
 impl StateBehavior for Trigger {
     #[instrument(skip(self))]
@@ -195,6 +194,11 @@ impl StateBehavior for Trigger {
         self.data.event_sender.send(EventMsg::Trigger)?;
         Ok(Some(Waiting { data: self.data }.into()))
     }
+}
+
+#[derive(Debug)]
+struct Stopped {
+    data: CommonData,
 }
 
 #[async_trait]

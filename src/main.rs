@@ -3,16 +3,12 @@ use clap::StructOpt;
 use opencv::{imgcodecs, prelude::*};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::select;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, info, trace};
 
 use crate::alpha_image::AlphaImage;
-use crate::auto_trigger::spawn_trigger;
-use crate::capture_thread::spawn_capture_thread;
 use crate::snapshot_repo::SnapshotRepo;
-use crate::ui_thread::spawn_ui_thread;
 
 mod alpha_image;
 mod args;
@@ -21,6 +17,7 @@ mod capture_thread;
 mod log;
 mod snapshot_repo;
 mod ui_thread;
+mod web;
 
 const KEY_ESCAPE: i32 = 27;
 const KEY_ENTER: i32 = 13;
@@ -32,12 +29,12 @@ async fn main() -> Result<()> {
     info!("starting");
 
     let (exit_sender, exit_receiver) = broadcast::channel(1);
-    let (capture_event_sender, mut capture_event_receiver) = broadcast::channel(1);
-    let (trigger_event_sender, mut trigger_event_receiver) = broadcast::channel(1);
-    let (ui_event_sender, mut ui_event_receiver) = broadcast::channel(1);
+    let (capture_event_sender, capture_event_receiver) = broadcast::channel(1);
+    let (trigger_event_sender, trigger_event_receiver) = broadcast::channel(1);
+    let (ui_event_sender, ui_event_receiver) = broadcast::channel(1);
 
     let (countdown_blend_images, snapshot_blend_image) = read_overlay_images(
-        &args.countdown.unwrap_or_else(|| {
+        &args.countdown.clone().unwrap_or_else(|| {
             ["assets/1.png", "assets/2.png", "assets/3.png"]
                 .into_iter()
                 .map(PathBuf::from)
@@ -45,10 +42,11 @@ async fn main() -> Result<()> {
         }),
         &args
             .mugshot
+            .clone()
             .unwrap_or_else(|| PathBuf::from("assets/mugshot.png")),
     )?;
 
-    let (ui_thread, ui_control_sender) = spawn_ui_thread(
+    let (ui_thread, ui_control_sender) = ui_thread::spawn(
         if args.fullscreen {
             ui_thread::WindowMode::Fullscreen
         } else {
@@ -60,19 +58,58 @@ async fn main() -> Result<()> {
     );
 
     let capture_thread =
-        spawn_capture_thread(args.video, capture_event_sender, exit_sender.subscribe());
+        capture_thread::spawn(args.video, capture_event_sender, exit_sender.subscribe());
 
-    let (trigger_thread, trigger_control_sender) = spawn_trigger(
+    let (trigger_thread, trigger_control_sender) = auto_trigger::spawn(
         args.trigger,
-        trigger_event_sender,
+        trigger_event_sender.clone(),
         exit_sender.subscribe(),
         countdown_blend_images.len(),
     );
 
-    let mut repo = SnapshotRepo::from_path_and_namepattern(args.output, args.filename);
+    let rest_service_thread = web::spawn(exit_sender.subscribe(), trigger_event_sender);
+
+    let repo = SnapshotRepo::from_path_and_namepattern(args.output.clone(), &args.filename);
+
+    coordinate_events(
+        args,
+        capture_event_receiver,
+        ui_event_receiver,
+        &ui_control_sender,
+        trigger_event_receiver,
+        &trigger_control_sender,
+        repo,
+        &countdown_blend_images,
+        snapshot_blend_image,
+    )
+    .await;
+
+    info!("sending exit message");
+    exit_sender.send(true)?;
+    rest_service_thread.await??;
+    trigger_thread.await??;
+    capture_thread.join().expect("thread join failed");
+    ui_thread.join().expect("thread join failed");
+
+    info!("exited");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn coordinate_events(
+    args: args::Args,
+    mut capture_event_receiver: broadcast::Receiver<Mat>,
+    mut ui_event_receiver: broadcast::Receiver<ui_thread::EventMsg>,
+    ui_control_sender: &mpsc::Sender<ui_thread::ControlMsg>,
+    mut trigger_event_receiver: broadcast::Receiver<auto_trigger::EventMsg>,
+    trigger_control_sender: &mpsc::Sender<auto_trigger::ControlMsg>,
+    mut repo: SnapshotRepo,
+    countdown_blend_images: &[AlphaImage],
+    snapshot_blend_image: Option<AlphaImage>,
+) {
     let mut frame = Mat::default();
     loop {
-        select! {
+        tokio::select! {
             msg = ui_event_receiver.recv() => {
                 debug!(?msg, "msg from ui thread");
                 if let Ok(msg) = msg {
@@ -80,16 +117,16 @@ async fn main() -> Result<()> {
                         ui_thread::EventMsg::KeyPressed(key) => match key {
                             KEY_ENTER => save_snapshot(
                                     args.freeze,
-                                    &trigger_control_sender,
-                                    &ui_control_sender,
+                                    trigger_control_sender,
+                                    ui_control_sender,
                                     snapshot_blend_image.clone(),
                                     &mut repo,
                                     frame.clone(),
                                 ).await,
-                            KEY_ESCAPE => break,
+                            KEY_ESCAPE => return,
                             _ => {}
                         },
-                        ui_thread::EventMsg::WindowClosed => break,
+                        ui_thread::EventMsg::WindowClosed => return,
                     }
                 }
             }
@@ -103,8 +140,8 @@ async fn main() -> Result<()> {
                     match msg {
                         auto_trigger::EventMsg::Trigger => save_snapshot(
                                 args.freeze,
-                                &trigger_control_sender,
-                                &ui_control_sender,
+                                trigger_control_sender,
+                                ui_control_sender,
                                 snapshot_blend_image.clone(),
                                 &mut repo,
                                 frame.clone(),
@@ -117,15 +154,6 @@ async fn main() -> Result<()> {
             }
         };
     }
-
-    info!("sending exit message");
-    exit_sender.send(true)?;
-    trigger_thread.await??;
-    capture_thread.join().expect("thread join failed");
-    ui_thread.join().expect("thread join failed");
-
-    info!("exited");
-    Ok(())
 }
 
 fn read_overlay_images(
@@ -159,10 +187,9 @@ async fn save_snapshot(
     frame: Mat,
 ) {
     info!("Taking snapshot");
-    trigger_control_sender
+    let _ = trigger_control_sender
         .send(auto_trigger::ControlMsg::Stop)
-        .await
-        .unwrap();
+        .await;
     display_control_sender
         .send(ui_thread::ControlMsg::Freeze)
         .await
@@ -181,9 +208,8 @@ async fn save_snapshot(
         .send(ui_thread::ControlMsg::Live)
         .await
         .unwrap();
-    trigger_control_sender
+    let _ = trigger_control_sender
         .send(auto_trigger::ControlMsg::Run)
-        .await
-        .unwrap();
+        .await;
     debug!("snapshot taken");
 }
