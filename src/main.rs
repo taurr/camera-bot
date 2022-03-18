@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::StructOpt;
-use opencv::{imgcodecs, prelude::*};
+use opencv::imgcodecs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::sleep;
-use tracing::{debug, info, trace};
+use tracing::{debug, info};
 
 use crate::alpha_image::AlphaImage;
 use crate::snapshot_repo::SnapshotRepo;
@@ -53,12 +53,22 @@ async fn main() -> Result<()> {
             ui_thread::WindowMode::Windowed
         },
         ui_event_sender,
-        capture_event_sender.subscribe(),
+        capture_event_receiver,
         exit_receiver,
     );
 
-    let capture_thread =
-        capture_thread::spawn(args.video, capture_event_sender, exit_sender.subscribe());
+    let (capture_thread, capture_control_sender) = {
+        let (sender, receiver) = mpsc::channel(1);
+        (
+            capture_thread::spawn(
+                args.video,
+                receiver,
+                capture_event_sender,
+                exit_sender.subscribe(),
+            ),
+            sender,
+        )
+    };
 
     let (trigger_thread, trigger_control_sender) = auto_trigger::spawn(
         args.trigger,
@@ -73,7 +83,7 @@ async fn main() -> Result<()> {
 
     coordinate_events(
         args,
-        capture_event_receiver,
+        capture_control_sender,
         ui_event_receiver,
         &ui_control_sender,
         trigger_event_receiver,
@@ -98,7 +108,7 @@ async fn main() -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 async fn coordinate_events(
     args: args::Args,
-    mut capture_event_receiver: broadcast::Receiver<Mat>,
+    capture_control_sender: mpsc::Sender<capture_thread::Command>,
     mut ui_event_receiver: broadcast::Receiver<ui_thread::EventMsg>,
     ui_control_sender: &mpsc::Sender<ui_thread::ControlMsg>,
     mut trigger_event_receiver: broadcast::Receiver<auto_trigger::EventMsg>,
@@ -107,7 +117,6 @@ async fn coordinate_events(
     countdown_blend_images: &[AlphaImage],
     snapshot_blend_image: Option<AlphaImage>,
 ) {
-    let mut frame = Mat::default();
     loop {
         tokio::select! {
             msg = ui_event_receiver.recv() => {
@@ -117,11 +126,11 @@ async fn coordinate_events(
                         ui_thread::EventMsg::KeyPressed(key) => match key {
                             KEY_ENTER => save_snapshot(
                                     args.freeze,
+                                &capture_control_sender,
                                     trigger_control_sender,
                                     ui_control_sender,
                                     snapshot_blend_image.clone(),
                                     &mut repo,
-                                    frame.clone(),
                                 ).await,
                             KEY_ESCAPE => return,
                             _ => {}
@@ -130,22 +139,20 @@ async fn coordinate_events(
                     }
                 }
             }
-            msg = capture_event_receiver.recv() => {
-                trace!(?msg, "frame from capture thread");
-                if let Ok(f) = msg { frame = f }
-            },
             msg = trigger_event_receiver.recv() => {
                 debug!(?msg, "msg from trigger");
                 if let Ok(msg) = msg {
                     match msg {
-                        auto_trigger::EventMsg::Trigger => save_snapshot(
+                        auto_trigger::EventMsg::Trigger => {
+                            save_snapshot(
                                 args.freeze,
+                                &capture_control_sender,
                                 trigger_control_sender,
                                 ui_control_sender,
                                 snapshot_blend_image.clone(),
                                 &mut repo,
-                                frame.clone(),
-                            ).await,
+                            ).await;
+                        },
                         auto_trigger::EventMsg::Countdown(n) => {
                             ui_control_sender.send(ui_thread::ControlMsg::Blend(countdown_blend_images.get(n-1).cloned())).await.ok();
                         },
@@ -180,11 +187,11 @@ fn read_overlay_images(
 
 async fn save_snapshot(
     freeze_duration: Duration,
+    capture_control_sender: &mpsc::Sender<capture_thread::Command>,
     trigger_control_sender: &mpsc::Sender<auto_trigger::ControlMsg>,
     display_control_sender: &mpsc::Sender<ui_thread::ControlMsg>,
     snapshot_blend_image: Option<AlphaImage>,
     repo: &mut SnapshotRepo,
-    frame: Mat,
 ) {
     info!("Taking snapshot");
     let _ = trigger_control_sender
@@ -198,7 +205,12 @@ async fn save_snapshot(
         .send(ui_thread::ControlMsg::Blend(snapshot_blend_image))
         .await
         .unwrap();
-    repo.save_frame(&frame).expect("failed saving snapshot");
+
+    let (s, r) = oneshot::channel();
+    capture_control_sender.send(capture_thread::Command::Snapshot(s)).await.ok();
+    let snapshot = r.await.unwrap();
+    repo.save_frame(&snapshot).expect("failed saving snapshot");
+
     sleep(freeze_duration).await;
     display_control_sender
         .send(ui_thread::ControlMsg::Blend(None))

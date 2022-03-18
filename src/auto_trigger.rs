@@ -56,7 +56,7 @@ trait StateBehavior {
     async fn next_state(self) -> Result<Option<State>>;
 }
 
-#[instrument(skip_all)]
+#[instrument(skip(event_sender, control_receiver, exit_receiver))]
 async fn auto_trigger(
     params: TriggerParams,
     event_sender: broadcast::Sender<EventMsg>,
@@ -64,11 +64,12 @@ async fn auto_trigger(
     exit_receiver: broadcast::Receiver<bool>,
     countdown: usize,
 ) -> Result<()> {
+    info!("auto_trigger started");
+
     if params.timeout.is_none() {
+        warn!("exit auto_trigger");
         return Ok(());
     }
-
-    info!("auto_trigger started");
 
     let mut state = State::from(Waiting {
         data: CommonData {

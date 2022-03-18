@@ -8,15 +8,10 @@
       "type": "lldb",
       "request": "launch",
       "name": "Debug executable 'camera-bot'",
-      "preLaunchTask": "Check",
       "cargo": {
-        "args": [
-          "build",
-          "--bin=camera-bot",
-          "--package=camera-bot"
-        ]
+        "args": ["build", "--bin=camera-bot", "--package=camera-bot"]
       },
-      "args": [],
+      "args": ["-t", "10s"],
       "env": {
         "RUST_LOG": "warn,opencv_cam_test=debug"
       },
@@ -27,12 +22,7 @@
       "request": "launch",
       "name": "Debug unit tests in executable 'camera-bot'",
       "cargo": {
-        "args": [
-          "test",
-          "--no-run",
-          "--bin=camera-bot",
-          "--package=camera-bot"
-        ]
+        "args": ["test", "--no-run", "--bin=camera-bot", "--package=camera-bot"]
       },
       "args": [],
       "env": {

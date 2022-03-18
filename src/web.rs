@@ -30,6 +30,7 @@ fn web_server(trigger_event_sender: broadcast::Sender<TriggerType>) -> Server {
     })
     .bind(("0.0.0.0", 8080))
     .unwrap()
+    .workers(1)
     .run()
 }
 
