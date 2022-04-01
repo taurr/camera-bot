@@ -52,15 +52,15 @@ pub struct VideoParams {
     #[clap(short, long, default_value_t = 0)]
     pub device: i32,
 
-    /// Frame image width
-    #[clap(long, default_value_t = 320)]
+    /// Video image width
+    #[clap(long, default_value_t = 1920)]
     pub video_width: u32,
 
-    /// Frame image width
+    /// Snapshot image width
     #[clap(long, default_value_t = 1920)]
     pub snapshot_width: u32,
 
-    /// Frame image width
+    /// Frame Rate
     #[clap(long = "fps", default_value_t = 30)]
     pub frame_rate: u32,
 }

@@ -106,7 +106,11 @@ fn ui_event_loop(
             debug!(?msg, "received control msg");
             match msg {
                 ControlMsg::Blend(img) => {
-                    blending_image = img.map(|img| img.resize(frame_i.size().unwrap()));
+                    if let Ok(size) = frame_i.size() {
+                        if !size.empty() {
+                            blending_image = img.map(|img| img.resize(size));
+                        }
+                    }
                 }
                 ControlMsg::Freeze => video_state = VideoState::Frozen,
                 ControlMsg::Live => video_state = VideoState::Live,

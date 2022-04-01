@@ -28,11 +28,6 @@ async fn main() -> Result<()> {
     log::setup_tracing();
     info!("starting");
 
-    let (exit_sender, exit_receiver) = broadcast::channel(1);
-    let (capture_event_sender, capture_event_receiver) = broadcast::channel(1);
-    let (trigger_event_sender, trigger_event_receiver) = broadcast::channel(1);
-    let (ui_event_sender, ui_event_receiver) = broadcast::channel(1);
-
     let (countdown_blend_images, snapshot_blend_image) = read_overlay_images(
         &args.countdown.clone().unwrap_or_else(|| {
             ["assets/1.png", "assets/2.png", "assets/3.png"]
@@ -46,6 +41,22 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| PathBuf::from("assets/mugshot.png")),
     )?;
 
+    let (exit_sender, exit_receiver) = broadcast::channel(1);
+    let (capture_event_sender, capture_event_receiver) = broadcast::channel(1);
+    let (capture_thread, capture_control_sender) = {
+        let (sender, receiver) = mpsc::channel(1);
+        (
+            capture_thread::spawn(
+                args.video,
+                receiver,
+                capture_event_sender,
+                exit_sender.subscribe(),
+            ).await?,
+            sender,
+        )
+    };
+
+    let (ui_event_sender, ui_event_receiver) = broadcast::channel(1);
     let (ui_thread, ui_control_sender) = ui_thread::spawn(
         if args.fullscreen {
             ui_thread::WindowMode::Fullscreen
@@ -57,19 +68,7 @@ async fn main() -> Result<()> {
         exit_receiver,
     );
 
-    let (capture_thread, capture_control_sender) = {
-        let (sender, receiver) = mpsc::channel(1);
-        (
-            capture_thread::spawn(
-                args.video,
-                receiver,
-                capture_event_sender,
-                exit_sender.subscribe(),
-            ),
-            sender,
-        )
-    };
-
+    let (trigger_event_sender, trigger_event_receiver) = broadcast::channel(1);
     let (trigger_thread, trigger_control_sender) = auto_trigger::spawn(
         args.trigger,
         trigger_event_sender.clone(),
@@ -197,29 +196,34 @@ async fn save_snapshot(
     let _ = trigger_control_sender
         .send(auto_trigger::ControlMsg::Stop)
         .await;
-    display_control_sender
-        .send(ui_thread::ControlMsg::Freeze)
+
+    let (s, r) = oneshot::channel();
+    capture_control_sender
+        .send(capture_thread::Command::Snapshot(s))
         .await
-        .unwrap();
+        .ok();
+    let snapshot = r.await.unwrap();
     display_control_sender
         .send(ui_thread::ControlMsg::Blend(snapshot_blend_image))
         .await
-        .unwrap();
-
-    let (s, r) = oneshot::channel();
-    capture_control_sender.send(capture_thread::Command::Snapshot(s)).await.ok();
-    let snapshot = r.await.unwrap();
+        .ok();
+    display_control_sender
+        .send(ui_thread::ControlMsg::Freeze)
+        .await
+        .ok();
     repo.save_frame(&snapshot).expect("failed saving snapshot");
 
     sleep(freeze_duration).await;
+
+    info!("restarting video");
     display_control_sender
         .send(ui_thread::ControlMsg::Blend(None))
         .await
-        .unwrap();
+        .ok();
     display_control_sender
         .send(ui_thread::ControlMsg::Live)
         .await
-        .unwrap();
+        .ok();
     let _ = trigger_control_sender
         .send(auto_trigger::ControlMsg::Run)
         .await;
